@@ -3,6 +3,7 @@ using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Burst;
+using Unity.Rendering;
 
 public struct InitializeCharacterFlag : IComponentData, IEnableableComponent
 {
@@ -16,6 +17,14 @@ public struct CharacterMoveSpeed : IComponentData
 {
     public float Value;
 }
+
+[MaterialProperty("_FacingDirection")]
+public struct FacingDirectionOverride : IComponentData
+{
+    public float Value;
+}
+
+
 
 public class CharacterAuthoring : MonoBehaviour
 {
@@ -32,6 +41,10 @@ public class CharacterAuthoring : MonoBehaviour
             {                                                               //并在Runtime的Inspector中可视化和调整这些参数
                 Value = authoring.MoveSpeed
             });
+            AddComponent(entity, new FacingDirectionOverride
+            {
+                Value = 1
+            });
         }
     }
 } 
@@ -39,6 +52,7 @@ public class CharacterAuthoring : MonoBehaviour
 /*
 partial 关键字的作用：允许将一个类、结构体、接口或方法的定义拆分到多个文件（或多个位置）中。在编译时，C# 编译器会自动将这些部分拼接成一个完整的类型。
 它最强大的地方在于“组合大于拆分”，特别是在配合代码生成工具或多人协作时非常有用。
+这里的作用主要是：允许ECS源生成器为每一个类型分别追加代码片段，从而可以使用SystemAPI等新特性，而不需要手动编写大量样板代码。
 */
 [UpdateInGroup(typeof(InitializationSystemGroup))]          //指定系统的更新顺序，确保在初始化阶段执行
 public partial struct CharacterInitializeSystem : ISystem
@@ -60,12 +74,38 @@ public partial struct CharacterMoveSystem : ISystem
     public void OnUpdate(ref SystemState state)
     {
         //Query方法用于查询ECS世界中所有具有指定组件的实体，并返回一个可枚举的集合
-        foreach (var (velocity,direction,speed) in SystemAPI.Query<RefRW<PhysicsVelocity>, CharacterMoveDirection, CharacterMoveSpeed>())
+        foreach (var (velocity,facingDirection,direction,speed,entity) in SystemAPI.Query<RefRW<PhysicsVelocity>, RefRW<FacingDirectionOverride>, 
+        CharacterMoveDirection, CharacterMoveSpeed>().WithEntityAccess())
         {   
             //遍历查询到的所有实体，并获取它们的LocalTransform、CharacterMoveDirection和CharacterMoveSpeed组件数据 
             var moveStep2D = direction.Value * speed.Value ; 
             velocity.ValueRW.Linear = new float3(moveStep2D, 0f); 
-            //Debug.Log($"MoveStep2D: {moveStep2D}, Linear Velocity: {velocity.ValueRW.Linear}");
+            
+            if(math.abs(moveStep2D.x) > 0.15f)
+            {
+                facingDirection.ValueRW.Value = math.sign(moveStep2D.x);
+            }
+
+            if (SystemAPI.HasComponent<PlayerTag>(entity))
+            {
+                var animationOverride = SystemAPI.GetComponentRW<AnimationIndexOverride>(entity);
+                var animationType = math.lengthsq(moveStep2D) > float.Epsilon ? PlayerAnimationIndex.Movement : PlayerAnimationIndex.Idle; 
+                animationOverride.ValueRW.Value = (float)animationType;
+            }
         }
+    }
+}
+
+public partial struct GlobalTimeUpdateSystem : ISystem
+{
+    private static int _globalTimeShaderPropertyID;
+
+    public void OnCreate(ref SystemState state)
+    {
+        _globalTimeShaderPropertyID =  Shader.PropertyToID("_GlobalTime");
+    }
+    public void OnUpdate(ref SystemState state)
+    {
+        Shader.SetGlobalFloat(_globalTimeShaderPropertyID, (float)SystemAPI.Time.ElapsedTime);
     }
 }
